@@ -5,7 +5,6 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"strings"
 	"text/tabwriter"
 )
 
@@ -36,22 +35,16 @@ func (c *DatabasesCommand) Run(ctx context.Context, args []string) (err error) {
 	w := tabwriter.NewWriter(os.Stdout, 0, 8, 2, ' ', 0)
 	defer w.Flush()
 
-	fmt.Fprintln(w, "path\treplicas")
+	fmt.Fprintln(w, "path\treplica")
 	for _, dbConfig := range config.DBs {
 		db, err := NewDBFromConfig(dbConfig)
 		if err != nil {
 			return err
 		}
 
-		var replicaNames []string
-		for _, r := range db.Replicas {
-			replicaNames = append(replicaNames, r.Name())
-		}
-
 		fmt.Fprintf(w, "%s\t%s\n",
 			db.Path(),
-			strings.Join(replicaNames, ","),
-		)
+			db.Replica.Client.Type())
 	}
 
 	return nil

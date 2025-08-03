@@ -5,8 +5,10 @@ import (
 	"encoding/hex"
 	"testing"
 
-	"github.com/benbjohnson/litestream"
 	_ "github.com/mattn/go-sqlite3"
+	"github.com/superfly/ltx"
+
+	"github.com/benbjohnson/litestream"
 )
 
 func TestChecksum(t *testing.T) {
@@ -39,102 +41,21 @@ func TestChecksum(t *testing.T) {
 		}
 	})
 }
-
-func TestGenerationsPath(t *testing.T) {
-	t.Run("OK", func(t *testing.T) {
-		if got, want := litestream.GenerationsPath("foo"), "foo/generations"; got != want {
-			t.Fatalf("GenerationsPath()=%v, want %v", got, want)
-		}
-	})
-	t.Run("NoPath", func(t *testing.T) {
-		if got, want := litestream.GenerationsPath(""), "generations"; got != want {
-			t.Fatalf("GenerationsPath()=%v, want %v", got, want)
-		}
-	})
-}
-
-func TestGenerationPath(t *testing.T) {
-	t.Run("OK", func(t *testing.T) {
-		if got, err := litestream.GenerationPath("foo", "0123456701234567"); err != nil {
-			t.Fatal(err)
-		} else if want := "foo/generations/0123456701234567"; got != want {
-			t.Fatalf("GenerationPath()=%v, want %v", got, want)
-		}
-	})
-	t.Run("ErrNoGeneration", func(t *testing.T) {
-		if _, err := litestream.GenerationPath("foo", ""); err == nil || err.Error() != `generation required` {
-			t.Fatalf("expected error: %v", err)
-		}
-	})
-}
-
-func TestSnapshotsPath(t *testing.T) {
-	t.Run("OK", func(t *testing.T) {
-		if got, err := litestream.SnapshotsPath("foo", "0123456701234567"); err != nil {
-			t.Fatal(err)
-		} else if want := "foo/generations/0123456701234567/snapshots"; got != want {
-			t.Fatalf("SnapshotsPath()=%v, want %v", got, want)
-		}
-	})
-	t.Run("ErrNoGeneration", func(t *testing.T) {
-		if _, err := litestream.SnapshotsPath("foo", ""); err == nil || err.Error() != `generation required` {
-			t.Fatalf("unexpected error: %v", err)
-		}
-	})
-}
-
-func TestSnapshotPath(t *testing.T) {
-	t.Run("OK", func(t *testing.T) {
-		if got, err := litestream.SnapshotPath("foo", "0123456701234567", 1000); err != nil {
-			t.Fatal(err)
-		} else if want := "foo/generations/0123456701234567/snapshots/000003e8.snapshot.lz4"; got != want {
-			t.Fatalf("SnapshotPath()=%v, want %v", got, want)
-		}
-	})
-	t.Run("ErrNoGeneration", func(t *testing.T) {
-		if _, err := litestream.SnapshotPath("foo", "", 1000); err == nil || err.Error() != `generation required` {
-			t.Fatalf("unexpected error: %v", err)
-		}
-	})
-}
-
-func TestWALPath(t *testing.T) {
-	t.Run("OK", func(t *testing.T) {
-		if got, err := litestream.WALPath("foo", "0123456701234567"); err != nil {
-			t.Fatal(err)
-		} else if want := "foo/generations/0123456701234567/wal"; got != want {
-			t.Fatalf("WALPath()=%v, want %v", got, want)
-		}
-	})
-	t.Run("ErrNoGeneration", func(t *testing.T) {
-		if _, err := litestream.WALPath("foo", ""); err == nil || err.Error() != `generation required` {
-			t.Fatalf("unexpected error: %v", err)
-		}
-	})
-}
-
-func TestWALSegmentPath(t *testing.T) {
-	t.Run("OK", func(t *testing.T) {
-		if got, err := litestream.WALSegmentPath("foo", "0123456701234567", 1000, 1001); err != nil {
-			t.Fatal(err)
-		} else if want := "foo/generations/0123456701234567/wal/000003e8_000003e9.wal.lz4"; got != want {
-			t.Fatalf("WALPath()=%v, want %v", got, want)
-		}
-	})
-	t.Run("ErrNoGeneration", func(t *testing.T) {
-		if _, err := litestream.WALSegmentPath("foo", "", 1000, 0); err == nil || err.Error() != `generation required` {
-			t.Fatalf("unexpected error: %v", err)
-		}
-	})
-}
-
-func TestFindMinSnapshotByGeneration(t *testing.T) {
-	infos := []litestream.SnapshotInfo{
-		{Generation: "29cf4bced74e92ab", Index: 0},
-		{Generation: "5dfeb4aa03232553", Index: 24},
+func TestLTXDir(t *testing.T) {
+	if got, want := litestream.LTXDir("foo"), "foo/ltx"; got != want {
+		t.Fatalf("LTXDir()=%v, want %v", got, want)
 	}
-	if got, want := litestream.FindMinSnapshotByGeneration(infos, "29cf4bced74e92ab"), &infos[0]; got != want {
-		t.Fatalf("info=%#v, want %#v", got, want)
+}
+
+func TestLTXLevelDir(t *testing.T) {
+	if got, want := litestream.LTXLevelDir("foo", 0), "foo/ltx/0"; got != want {
+		t.Fatalf("LTXLevelDir()=%v, want %v", got, want)
+	}
+}
+
+func LTXFilePath(t *testing.T) {
+	if got, want := litestream.LTXFilePath("foo", 0, ltx.TXID(100), ltx.TXID(200)), "-"; got != want {
+		t.Fatalf("LTXPath()=%v, want %v", got, want)
 	}
 }
 

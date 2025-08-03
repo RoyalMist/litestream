@@ -11,14 +11,15 @@ import (
 	"os"
 	"os/exec"
 
+	"github.com/mattn/go-shellwords"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+
 	"github.com/benbjohnson/litestream"
 	"github.com/benbjohnson/litestream/abs"
 	"github.com/benbjohnson/litestream/file"
 	"github.com/benbjohnson/litestream/gcs"
 	"github.com/benbjohnson/litestream/s3"
 	"github.com/benbjohnson/litestream/sftp"
-	"github.com/mattn/go-shellwords"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 // ReplicateCommand represents a command that continuously replicates SQLite databases.
@@ -28,11 +29,11 @@ type ReplicateCommand struct {
 
 	Config Config
 
-	// List of managed databases specified in the config.
-	DBs []*litestream.DB
-
 	// MCP server
 	MCP *MCPServer
+
+	// Manages the set of databases & compaction levels.
+	Store *litestream.Store
 }
 
 func NewReplicateCommand() *ReplicateCommand {
@@ -58,6 +59,9 @@ func (c *ReplicateCommand) ParseFlags(ctx context.Context, args []string) (err e
 		if *configPath != "" {
 			return fmt.Errorf("cannot specify a replica URL and the -config flag")
 		}
+
+		// Initialize config with defaults when using command-line arguments
+		c.Config = DefaultConfig()
 
 		dbConfig := &DBConfig{Path: fs.Arg(0)}
 		for _, u := range fs.Args()[1:] {
@@ -89,7 +93,7 @@ func (c *ReplicateCommand) ParseFlags(ctx context.Context, args []string) (err e
 // Run loads all databases specified in the configuration.
 func (c *ReplicateCommand) Run() (err error) {
 	// Display version information.
-	slog.Info("litestream", "version", Version)
+	slog.Info("litestream", "version", Version, "level", c.Config.Logging.Level)
 
 	// Start MCP server if enabled
 	if c.Config.MCPAddr != "" {
@@ -105,38 +109,41 @@ func (c *ReplicateCommand) Run() (err error) {
 		slog.Error("no databases specified in configuration")
 	}
 
+	var dbs []*litestream.DB
 	for _, dbConfig := range c.Config.DBs {
 		db, err := NewDBFromConfig(dbConfig)
 		if err != nil {
 			return err
 		}
+		dbs = append(dbs, db)
+	}
 
-		// Open database & attach to program.
-		if err := db.Open(); err != nil {
-			return err
-		}
-		c.DBs = append(c.DBs, db)
+	levels := c.Config.CompactionLevels()
+	c.Store = litestream.NewStore(dbs, levels)
+	c.Store.SnapshotInterval = c.Config.Snapshot.Interval
+	c.Store.SnapshotRetention = c.Config.Snapshot.Retention
+	if err := c.Store.Open(context.Background()); err != nil {
+		return fmt.Errorf("cannot open store: %w", err)
 	}
 
 	// Notify user that initialization is done.
-	for _, db := range c.DBs {
+	for _, db := range c.Store.DBs() {
+		r := db.Replica
 		slog.Info("initialized db", "path", db.Path())
-		for _, r := range db.Replicas {
-			slog := slog.With("name", r.Name(), "type", r.Client.Type(), "sync-interval", r.SyncInterval)
-			switch client := r.Client.(type) {
-			case *file.ReplicaClient:
-				slog.Info("replicating to", "path", client.Path())
-			case *s3.ReplicaClient:
-				slog.Info("replicating to", "bucket", client.Bucket, "path", client.Path, "region", client.Region, "endpoint", client.Endpoint)
-			case *gcs.ReplicaClient:
-				slog.Info("replicating to", "bucket", client.Bucket, "path", client.Path)
-			case *abs.ReplicaClient:
-				slog.Info("replicating to", "bucket", client.Bucket, "path", client.Path, "endpoint", client.Endpoint)
-			case *sftp.ReplicaClient:
-				slog.Info("replicating to", "host", client.Host, "user", client.User, "path", client.Path)
-			default:
-				slog.Info("replicating to")
-			}
+		slog := slog.With("type", r.Client.Type(), "sync-interval", r.SyncInterval)
+		switch client := r.Client.(type) {
+		case *file.ReplicaClient:
+			slog.Info("replicating to", "path", client.Path())
+		case *s3.ReplicaClient:
+			slog.Info("replicating to", "bucket", client.Bucket, "path", client.Path, "region", client.Region, "endpoint", client.Endpoint)
+		case *gcs.ReplicaClient:
+			slog.Info("replicating to", "bucket", client.Bucket, "path", client.Path)
+		case *abs.ReplicaClient:
+			slog.Info("replicating to", "bucket", client.Bucket, "path", client.Path, "endpoint", client.Endpoint)
+		case *sftp.ReplicaClient:
+			slog.Info("replicating to", "host", client.Host, "user", client.User, "path", client.Path)
+		default:
+			slog.Info("replicating to")
 		}
 	}
 
@@ -180,13 +187,8 @@ func (c *ReplicateCommand) Run() (err error) {
 
 // Close closes all open databases.
 func (c *ReplicateCommand) Close() (err error) {
-	for _, db := range c.DBs {
-		if e := db.Close(context.Background()); e != nil {
-			db.Logger.Error("error closing db", "error", e)
-			if err == nil {
-				err = e
-			}
-		}
+	if e := c.Store.Close(); e != nil {
+		slog.Error("failed to close database", "error", e)
 	}
 	if c.Config.MCPAddr != "" {
 		if err := c.MCP.Close(); err != nil {

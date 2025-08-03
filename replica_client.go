@@ -2,47 +2,64 @@ package litestream
 
 import (
 	"context"
+	"errors"
 	"io"
+
+	"github.com/superfly/ltx"
 )
+
+var ErrStopIter = errors.New("stop iterator")
 
 // ReplicaClient represents client to connect to a Replica.
 type ReplicaClient interface {
-	// Returns the type of client.
+	// Type returns the type of client.
 	Type() string
 
-	// Returns a list of available generations. Order is undefined.
-	Generations(ctx context.Context) ([]string, error)
+	// LTXFiles returns an iterator of all LTX files on the replica for a given level.
+	// If seek is specified, the iterator start from the given TXID or the next available if not found.
+	LTXFiles(ctx context.Context, level int, seek ltx.TXID) (ltx.FileIterator, error)
 
-	// Deletes all snapshots & WAL segments within a generation.
-	DeleteGeneration(ctx context.Context, generation string) error
+	// OpenLTXFile returns a reader that contains an LTX file at a given TXID.
+	// Returns an os.ErrNotFound error if the LTX file does not exist.
+	OpenLTXFile(ctx context.Context, level int, minTXID, maxTXID ltx.TXID) (io.ReadCloser, error)
 
-	// Returns an iterator of all snapshots within a generation on the replica. Order is undefined.
-	Snapshots(ctx context.Context, generation string) (SnapshotIterator, error)
+	// WriteLTXFile writes an LTX file to the replica.
+	// Returns metadata for the written file.
+	WriteLTXFile(ctx context.Context, level int, minTXID, maxTXID ltx.TXID, r io.Reader) (*ltx.FileInfo, error)
 
-	// Writes LZ4 compressed snapshot data to the replica at a given index
-	// within a generation. Returns metadata for the snapshot.
-	WriteSnapshot(ctx context.Context, generation string, index int, r io.Reader) (SnapshotInfo, error)
+	// DeleteLTXFiles deletes one or more LTX files.
+	DeleteLTXFiles(ctx context.Context, a []*ltx.FileInfo) error
 
-	// Deletes a snapshot with the given generation & index.
-	DeleteSnapshot(ctx context.Context, generation string, index int) error
+	// DeleteAll deletes all files.
+	DeleteAll(ctx context.Context) error
+}
 
-	// Returns a reader that contains LZ4 compressed snapshot data for a
-	// given index within a generation. Returns an os.ErrNotFound error if
-	// the snapshot does not exist.
-	SnapshotReader(ctx context.Context, generation string, index int) (io.ReadCloser, error)
+// FindLTXFiles returns a list of files that match filter.
+func FindLTXFiles(ctx context.Context, client ReplicaClient, level int, filter func(*ltx.FileInfo) (bool, error)) ([]*ltx.FileInfo, error) {
+	itr, err := client.LTXFiles(ctx, level, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = itr.Close() }()
 
-	// Returns an iterator of all WAL segments within a generation on the replica. Order is undefined.
-	WALSegments(ctx context.Context, generation string) (WALSegmentIterator, error)
+	var a []*ltx.FileInfo
+	for itr.Next() {
+		item := itr.Item()
 
-	// Writes an LZ4 compressed WAL segment at a given position.
-	// Returns metadata for the written segment.
-	WriteWALSegment(ctx context.Context, pos Pos, r io.Reader) (WALSegmentInfo, error)
+		match, err := filter(item)
+		if match {
+			a = append(a, item)
+		}
 
-	// Deletes one or more WAL segments at the given positions.
-	DeleteWALSegments(ctx context.Context, a []Pos) error
+		if err == ErrStopIter {
+			break
+		} else if err != nil {
+			return a, err
+		}
+	}
 
-	// Returns a reader that contains an LZ4 compressed WAL segment at a given
-	// index/offset within a generation. Returns an os.ErrNotFound error if the
-	// WAL segment does not exist.
-	WALSegmentReader(ctx context.Context, pos Pos) (io.ReadCloser, error)
+	if err := itr.Close(); err != nil {
+		return nil, err
+	}
+	return a, nil
 }

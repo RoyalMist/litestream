@@ -8,10 +8,11 @@ import (
 	"math/rand"
 	"os"
 	"path"
-	"reflect"
-	"sort"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/superfly/ltx"
 
 	"github.com/benbjohnson/litestream"
 	"github.com/benbjohnson/litestream/abs"
@@ -62,288 +63,60 @@ var (
 	sftpPath     = flag.String("sftp-path", os.Getenv("LITESTREAM_SFTP_PATH"), "")
 )
 
-func TestReplicaClient_Generations(t *testing.T) {
+func TestReplicaClient_LTX(t *testing.T) {
 	RunWithReplicaClient(t, "OK", func(t *testing.T, c litestream.ReplicaClient) {
 		t.Parallel()
 
-		// Write snapshots.
-		if _, err := c.WriteSnapshot(context.Background(), "5efbd8d042012dca", 0, strings.NewReader(`foo`)); err != nil {
+		// Write files out of order to check for sorting.
+		if _, err := c.WriteLTXFile(context.Background(), 0, ltx.TXID(4), ltx.TXID(8), strings.NewReader(`67`)); err != nil {
 			t.Fatal(err)
-		} else if _, err := c.WriteSnapshot(context.Background(), "b16ddcf5c697540f", 0, strings.NewReader(`bar`)); err != nil {
+		}
+		if _, err := c.WriteLTXFile(context.Background(), 0, ltx.TXID(1), ltx.TXID(1), strings.NewReader(``)); err != nil {
 			t.Fatal(err)
-		} else if _, err := c.WriteSnapshot(context.Background(), "155fe292f8333c72", 0, strings.NewReader(`baz`)); err != nil {
+		}
+		if _, err := c.WriteLTXFile(context.Background(), 0, ltx.TXID(9), ltx.TXID(9), strings.NewReader(`xyz`)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := c.WriteLTXFile(context.Background(), 0, ltx.TXID(2), ltx.TXID(3), strings.NewReader(`12345`)); err != nil {
 			t.Fatal(err)
 		}
 
-		// Fetch and sort generations.
-		got, err := c.Generations(context.Background())
-		if err != nil {
-			t.Fatal(err)
-		}
-		sort.Strings(got)
-
-		if want := []string{"155fe292f8333c72", "5efbd8d042012dca", "b16ddcf5c697540f"}; !reflect.DeepEqual(got, want) {
-			t.Fatalf("Generations()=%v, want %v", got, want)
-		}
-	})
-
-	RunWithReplicaClient(t, "NoGenerationsDir", func(t *testing.T, c litestream.ReplicaClient) {
-		t.Parallel()
-
-		if generations, err := c.Generations(context.Background()); err != nil {
-			t.Fatal(err)
-		} else if got, want := len(generations), 0; got != want {
-			t.Fatalf("len(Generations())=%v, want %v", got, want)
-		}
-	})
-}
-
-func TestReplicaClient_Snapshots(t *testing.T) {
-	RunWithReplicaClient(t, "OK", func(t *testing.T, c litestream.ReplicaClient) {
-		t.Parallel()
-
-		// Write snapshots.
-		if _, err := c.WriteSnapshot(context.Background(), "5efbd8d042012dca", 1, strings.NewReader(``)); err != nil {
-			t.Fatal(err)
-		} else if _, err := c.WriteSnapshot(context.Background(), "b16ddcf5c697540f", 5, strings.NewReader(`x`)); err != nil {
-			t.Fatal(err)
-		} else if _, err := c.WriteSnapshot(context.Background(), "b16ddcf5c697540f", 10, strings.NewReader(`xyz`)); err != nil {
-			t.Fatal(err)
-		}
-
-		// Fetch all snapshots by generation.
-		itr, err := c.Snapshots(context.Background(), "b16ddcf5c697540f")
+		itr, err := c.LTXFiles(context.Background(), 0, 0)
 		if err != nil {
 			t.Fatal(err)
 		}
 		defer itr.Close()
 
-		// Read all snapshots into a slice so they can be sorted.
-		a, err := litestream.SliceSnapshotIterator(itr)
+		// Read all items and ensure they are sorted.
+		a, err := ltx.SliceFileIterator(itr)
 		if err != nil {
 			t.Fatal(err)
-		} else if got, want := len(a), 2; got != want {
+		} else if got, want := len(a), 4; got != want {
 			t.Fatalf("len=%v, want %v", got, want)
 		}
-		sort.Sort(litestream.SnapshotInfoSlice(a))
 
-		// Verify first snapshot metadata.
-		if got, want := a[0].Generation, "b16ddcf5c697540f"; got != want {
-			t.Fatalf("Generation=%v, want %v", got, want)
-		} else if got, want := a[0].Index, 5; got != want {
+		if got, want := stripLTXFileInfo(a[0]), (&ltx.FileInfo{MinTXID: 1, MaxTXID: 1, Size: 0}); *got != *want {
 			t.Fatalf("Index=%v, want %v", got, want)
-		} else if got, want := a[0].Size, int64(1); got != want {
-			t.Fatalf("Size=%v, want %v", got, want)
-		} else if a[0].CreatedAt.IsZero() {
-			t.Fatalf("expected CreatedAt")
+		}
+		if got, want := stripLTXFileInfo(a[1]), (&ltx.FileInfo{MinTXID: 2, MaxTXID: 3, Size: 5}); *got != *want {
+			t.Fatalf("Index=%v, want %v", got, want)
+		}
+		if got, want := stripLTXFileInfo(a[2]), (&ltx.FileInfo{MinTXID: 4, MaxTXID: 8, Size: 2}); *got != *want {
+			t.Fatalf("Index=%v, want %v", got, want)
+		}
+		if got, want := stripLTXFileInfo(a[3]), (&ltx.FileInfo{MinTXID: 9, MaxTXID: 9, Size: 3}); *got != *want {
+			t.Fatalf("Index=%v, want %v", got, want)
 		}
 
-		// Verify second snapshot metadata.
-		if got, want := a[1].Generation, "b16ddcf5c697540f"; got != want {
-			t.Fatalf("Generation=%v, want %v", got, want)
-		} else if got, want := a[1].Index, 0xA; got != want {
-			t.Fatalf("Index=%v, want %v", got, want)
-		} else if got, want := a[1].Size, int64(3); got != want {
-			t.Fatalf("Size=%v, want %v", got, want)
-		} else if a[1].CreatedAt.IsZero() {
-			t.Fatalf("expected CreatedAt")
-		}
-
-		// Ensure close is clean.
 		if err := itr.Close(); err != nil {
 			t.Fatal(err)
-		}
-	})
-
-	RunWithReplicaClient(t, "NoGenerationDir", func(t *testing.T, c litestream.ReplicaClient) {
-		t.Parallel()
-
-		itr, err := c.Snapshots(context.Background(), "5efbd8d042012dca")
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer itr.Close()
-
-		if itr.Next() {
-			t.Fatal("expected no snapshots")
-		}
-	})
-
-	RunWithReplicaClient(t, "ErrNoGeneration", func(t *testing.T, c litestream.ReplicaClient) {
-		t.Parallel()
-
-		itr, err := c.Snapshots(context.Background(), "")
-		if err == nil {
-			err = itr.Close()
-		}
-		if err == nil || err.Error() != `cannot determine snapshots path: generation required` {
-			t.Fatalf("unexpected error: %v", err)
-		}
-	})
-}
-
-func TestReplicaClient_WriteSnapshot(t *testing.T) {
-	RunWithReplicaClient(t, "OK", func(t *testing.T, c litestream.ReplicaClient) {
-		t.Parallel()
-
-		if _, err := c.WriteSnapshot(context.Background(), "b16ddcf5c697540f", 1000, strings.NewReader(`foobar`)); err != nil {
-			t.Fatal(err)
-		}
-
-		if r, err := c.SnapshotReader(context.Background(), "b16ddcf5c697540f", 1000); err != nil {
-			t.Fatal(err)
-		} else if buf, err := io.ReadAll(r); err != nil {
-			t.Fatal(err)
-		} else if err := r.Close(); err != nil {
-			t.Fatal(err)
-		} else if got, want := string(buf), `foobar`; got != want {
-			t.Fatalf("data=%q, want %q", got, want)
-		}
-	})
-
-	RunWithReplicaClient(t, "ErrNoGeneration", func(t *testing.T, c litestream.ReplicaClient) {
-		t.Parallel()
-		if _, err := c.WriteSnapshot(context.Background(), "", 0, nil); err == nil || err.Error() != `cannot determine snapshot path: generation required` {
-			t.Fatalf("unexpected error: %v", err)
-		}
-	})
-}
-
-func TestReplicaClient_SnapshotReader(t *testing.T) {
-	RunWithReplicaClient(t, "OK", func(t *testing.T, c litestream.ReplicaClient) {
-		t.Parallel()
-
-		if _, err := c.WriteSnapshot(context.Background(), "5efbd8d042012dca", 10, strings.NewReader(`foo`)); err != nil {
-			t.Fatal(err)
-		}
-
-		r, err := c.SnapshotReader(context.Background(), "5efbd8d042012dca", 10)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer r.Close()
-
-		if buf, err := io.ReadAll(r); err != nil {
-			t.Fatal(err)
-		} else if got, want := string(buf), "foo"; got != want {
-			t.Fatalf("ReadAll=%v, want %v", got, want)
-		}
-	})
-
-	RunWithReplicaClient(t, "ErrNotFound", func(t *testing.T, c litestream.ReplicaClient) {
-		t.Parallel()
-
-		if _, err := c.SnapshotReader(context.Background(), "5efbd8d042012dca", 1); !os.IsNotExist(err) {
-			t.Fatalf("expected not exist, got %#v", err)
-		}
-	})
-
-	RunWithReplicaClient(t, "ErrNoGeneration", func(t *testing.T, c litestream.ReplicaClient) {
-		t.Parallel()
-
-		if _, err := c.SnapshotReader(context.Background(), "", 1); err == nil || err.Error() != `cannot determine snapshot path: generation required` {
-			t.Fatalf("unexpected error: %v", err)
-		}
-	})
-}
-
-func TestReplicaClient_WALs(t *testing.T) {
-	RunWithReplicaClient(t, "OK", func(t *testing.T, c litestream.ReplicaClient) {
-		t.Parallel()
-
-		if _, err := c.WriteWALSegment(context.Background(), litestream.Pos{Generation: "5efbd8d042012dca", Index: 1, Offset: 0}, strings.NewReader(``)); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := c.WriteWALSegment(context.Background(), litestream.Pos{Generation: "b16ddcf5c697540f", Index: 2, Offset: 0}, strings.NewReader(`12345`)); err != nil {
-			t.Fatal(err)
-		} else if _, err := c.WriteWALSegment(context.Background(), litestream.Pos{Generation: "b16ddcf5c697540f", Index: 2, Offset: 5}, strings.NewReader(`67`)); err != nil {
-			t.Fatal(err)
-		} else if _, err := c.WriteWALSegment(context.Background(), litestream.Pos{Generation: "b16ddcf5c697540f", Index: 3, Offset: 0}, strings.NewReader(`xyz`)); err != nil {
-			t.Fatal(err)
-		}
-
-		itr, err := c.WALSegments(context.Background(), "b16ddcf5c697540f")
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer itr.Close()
-
-		// Read all WAL segment files into a slice so they can be sorted.
-		a, err := litestream.SliceWALSegmentIterator(itr)
-		if err != nil {
-			t.Fatal(err)
-		} else if got, want := len(a), 3; got != want {
-			t.Fatalf("len=%v, want %v", got, want)
-		}
-		sort.Sort(litestream.WALSegmentInfoSlice(a))
-
-		// Verify first WAL segment metadata.
-		if got, want := a[0].Generation, "b16ddcf5c697540f"; got != want {
-			t.Fatalf("Generation=%v, want %v", got, want)
-		} else if got, want := a[0].Index, 2; got != want {
-			t.Fatalf("Index=%v, want %v", got, want)
-		} else if got, want := a[0].Offset, int64(0); got != want {
-			t.Fatalf("Offset=%v, want %v", got, want)
-		} else if got, want := a[0].Size, int64(5); got != want {
-			t.Fatalf("Size=%v, want %v", got, want)
-		} else if a[0].CreatedAt.IsZero() {
-			t.Fatalf("expected CreatedAt")
-		}
-
-		// Verify first WAL segment metadata.
-		if got, want := a[1].Generation, "b16ddcf5c697540f"; got != want {
-			t.Fatalf("Generation=%v, want %v", got, want)
-		} else if got, want := a[1].Index, 2; got != want {
-			t.Fatalf("Index=%v, want %v", got, want)
-		} else if got, want := a[1].Offset, int64(5); got != want {
-			t.Fatalf("Offset=%v, want %v", got, want)
-		} else if got, want := a[1].Size, int64(2); got != want {
-			t.Fatalf("Size=%v, want %v", got, want)
-		} else if a[1].CreatedAt.IsZero() {
-			t.Fatalf("expected CreatedAt")
-		}
-
-		// Verify third WAL segment metadata.
-		if got, want := a[2].Generation, "b16ddcf5c697540f"; got != want {
-			t.Fatalf("Generation=%v, want %v", got, want)
-		} else if got, want := a[2].Index, 3; got != want {
-			t.Fatalf("Index=%v, want %v", got, want)
-		} else if got, want := a[2].Offset, int64(0); got != want {
-			t.Fatalf("Offset=%v, want %v", got, want)
-		} else if got, want := a[2].Size, int64(3); got != want {
-			t.Fatalf("Size=%v, want %v", got, want)
-		} else if a[1].CreatedAt.IsZero() {
-			t.Fatalf("expected CreatedAt")
-		}
-
-		// Ensure close is clean.
-		if err := itr.Close(); err != nil {
-			t.Fatal(err)
-		}
-	})
-
-	RunWithReplicaClient(t, "NoGenerationDir", func(t *testing.T, c litestream.ReplicaClient) {
-		t.Parallel()
-
-		itr, err := c.WALSegments(context.Background(), "5efbd8d042012dca")
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer itr.Close()
-
-		if itr.Next() {
-			t.Fatal("expected no wal files")
 		}
 	})
 
 	RunWithReplicaClient(t, "NoWALs", func(t *testing.T, c litestream.ReplicaClient) {
 		t.Parallel()
 
-		if _, err := c.WriteSnapshot(context.Background(), "5efbd8d042012dca", 0, strings.NewReader(`foo`)); err != nil {
-			t.Fatal(err)
-		}
-
-		itr, err := c.WALSegments(context.Background(), "5efbd8d042012dca")
+		itr, err := c.LTXFiles(context.Background(), 0, 0)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -353,56 +126,45 @@ func TestReplicaClient_WALs(t *testing.T) {
 			t.Fatal("expected no wal files")
 		}
 	})
-
-	RunWithReplicaClient(t, "ErrNoGeneration", func(t *testing.T, c litestream.ReplicaClient) {
-		t.Parallel()
-
-		itr, err := c.WALSegments(context.Background(), "")
-		if err == nil {
-			err = itr.Close()
-		}
-		if err == nil || err.Error() != `cannot determine wal path: generation required` {
-			t.Fatalf("unexpected error: %v", err)
-		}
-	})
 }
 
-func TestReplicaClient_WriteWALSegment(t *testing.T) {
+func TestReplicaClient_WriteLTXFile(t *testing.T) {
 	RunWithReplicaClient(t, "OK", func(t *testing.T, c litestream.ReplicaClient) {
 		t.Parallel()
 
-		if _, err := c.WriteWALSegment(context.Background(), litestream.Pos{Generation: "b16ddcf5c697540f", Index: 1000, Offset: 2000}, strings.NewReader(`foobar`)); err != nil {
+		if _, err := c.WriteLTXFile(context.Background(), 0, ltx.TXID(1), ltx.TXID(2), strings.NewReader(`foobar`)); err != nil {
 			t.Fatal(err)
 		}
 
-		if r, err := c.WALSegmentReader(context.Background(), litestream.Pos{Generation: "b16ddcf5c697540f", Index: 1000, Offset: 2000}); err != nil {
+		r, err := c.OpenLTXFile(context.Background(), 0, ltx.TXID(1), ltx.TXID(2))
+		if err != nil {
 			t.Fatal(err)
-		} else if buf, err := io.ReadAll(r); err != nil {
+		}
+		defer func() { _ = r.Close() }()
+
+		buf, err := io.ReadAll(r)
+		if err != nil {
 			t.Fatal(err)
-		} else if err := r.Close(); err != nil {
+		}
+
+		if err := r.Close(); err != nil {
 			t.Fatal(err)
-		} else if got, want := string(buf), `foobar`; got != want {
+		}
+
+		if got, want := string(buf), `foobar`; got != want {
 			t.Fatalf("data=%q, want %q", got, want)
 		}
 	})
-
-	RunWithReplicaClient(t, "ErrNoGeneration", func(t *testing.T, c litestream.ReplicaClient) {
-		t.Parallel()
-		if _, err := c.WriteWALSegment(context.Background(), litestream.Pos{Generation: "", Index: 0, Offset: 0}, nil); err == nil || err.Error() != `cannot determine wal segment path: generation required` {
-			t.Fatalf("unexpected error: %v", err)
-		}
-	})
 }
 
-func TestReplicaClient_WALReader(t *testing.T) {
-
+func TestReplicaClient_OpenLTXFile(t *testing.T) {
 	RunWithReplicaClient(t, "OK", func(t *testing.T, c litestream.ReplicaClient) {
 		t.Parallel()
-		if _, err := c.WriteWALSegment(context.Background(), litestream.Pos{Generation: "5efbd8d042012dca", Index: 10, Offset: 5}, strings.NewReader(`foobar`)); err != nil {
+		if _, err := c.WriteLTXFile(context.Background(), 0, ltx.TXID(1), ltx.TXID(2), strings.NewReader(`foobar`)); err != nil {
 			t.Fatal(err)
 		}
 
-		r, err := c.WALSegmentReader(context.Background(), litestream.Pos{Generation: "5efbd8d042012dca", Index: 10, Offset: 5})
+		r, err := c.OpenLTXFile(context.Background(), 0, ltx.TXID(1), ltx.TXID(2))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -418,7 +180,7 @@ func TestReplicaClient_WALReader(t *testing.T) {
 	RunWithReplicaClient(t, "ErrNotFound", func(t *testing.T, c litestream.ReplicaClient) {
 		t.Parallel()
 
-		if _, err := c.WALSegmentReader(context.Background(), litestream.Pos{Generation: "5efbd8d042012dca", Index: 1, Offset: 0}); !os.IsNotExist(err) {
+		if _, err := c.OpenLTXFile(context.Background(), 0, ltx.TXID(1), ltx.TXID(1)); !os.IsNotExist(err) {
 			t.Fatalf("expected not exist, got %#v", err)
 		}
 	})
@@ -428,30 +190,25 @@ func TestReplicaClient_DeleteWALSegments(t *testing.T) {
 	RunWithReplicaClient(t, "OK", func(t *testing.T, c litestream.ReplicaClient) {
 		t.Parallel()
 
-		if _, err := c.WriteWALSegment(context.Background(), litestream.Pos{Generation: "b16ddcf5c697540f", Index: 1, Offset: 2}, strings.NewReader(`foo`)); err != nil {
+		if _, err := c.WriteLTXFile(context.Background(), 0, ltx.TXID(1), ltx.TXID(2), strings.NewReader(`foo`)); err != nil {
 			t.Fatal(err)
-		} else if _, err := c.WriteWALSegment(context.Background(), litestream.Pos{Generation: "5efbd8d042012dca", Index: 3, Offset: 4}, strings.NewReader(`bar`)); err != nil {
+		}
+		if _, err := c.WriteLTXFile(context.Background(), 0, ltx.TXID(3), ltx.TXID(4), strings.NewReader(`bar`)); err != nil {
 			t.Fatal(err)
 		}
 
-		if err := c.DeleteWALSegments(context.Background(), []litestream.Pos{
-			{Generation: "b16ddcf5c697540f", Index: 1, Offset: 2},
-			{Generation: "5efbd8d042012dca", Index: 3, Offset: 4},
+		if err := c.DeleteLTXFiles(context.Background(), []*ltx.FileInfo{
+			{Level: 0, MinTXID: 1, MaxTXID: 2},
+			{Level: 0, MinTXID: 3, MaxTXID: 4},
 		}); err != nil {
 			t.Fatal(err)
 		}
 
-		if _, err := c.WALSegmentReader(context.Background(), litestream.Pos{Generation: "b16ddcf5c697540f", Index: 1, Offset: 2}); !os.IsNotExist(err) {
-			t.Fatalf("expected not exist, got %#v", err)
-		} else if _, err := c.WALSegmentReader(context.Background(), litestream.Pos{Generation: "5efbd8d042012dca", Index: 3, Offset: 4}); !os.IsNotExist(err) {
+		if _, err := c.OpenLTXFile(context.Background(), 0, ltx.TXID(1), ltx.TXID(2)); !os.IsNotExist(err) {
 			t.Fatalf("expected not exist, got %#v", err)
 		}
-	})
-
-	RunWithReplicaClient(t, "ErrNoGeneration", func(t *testing.T, c litestream.ReplicaClient) {
-		t.Parallel()
-		if err := c.DeleteWALSegments(context.Background(), []litestream.Pos{{}}); err == nil || err.Error() != `cannot determine wal segment path: generation required` {
-			t.Fatalf("unexpected error: %v", err)
+		if _, err := c.OpenLTXFile(context.Background(), 0, ltx.TXID(3), ltx.TXID(4)); !os.IsNotExist(err) {
+			t.Fatalf("expected not exist, got %#v", err)
 		}
 	})
 }
@@ -552,15 +309,8 @@ func NewSFTPReplicaClient(tb testing.TB) *sftp.ReplicaClient {
 func MustDeleteAll(tb testing.TB, c litestream.ReplicaClient) {
 	tb.Helper()
 
-	generations, err := c.Generations(context.Background())
-	if err != nil {
-		tb.Fatalf("cannot list generations for deletion: %s", err)
-	}
-
-	for _, generation := range generations {
-		if err := c.DeleteGeneration(context.Background(), generation); err != nil {
-			tb.Fatalf("cannot delete generation: %s", err)
-		}
+	if err := c.DeleteAll(context.Background()); err != nil {
+		tb.Fatalf("cannot delete all: %s", err)
 	}
 
 	switch c := c.(type) {
@@ -569,4 +319,10 @@ func MustDeleteAll(tb testing.TB, c litestream.ReplicaClient) {
 			tb.Fatalf("cannot cleanup sftp: %s", err)
 		}
 	}
+}
+
+func stripLTXFileInfo(info *ltx.FileInfo) *ltx.FileInfo {
+	other := *info
+	other.CreatedAt = time.Time{}
+	return &other
 }
